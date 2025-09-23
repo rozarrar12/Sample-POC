@@ -1,7 +1,6 @@
 "use client"
 
 import type React from "react"
-
 import { useState } from "react"
 import { useChat } from "@ai-sdk/react"
 import { DefaultChatTransport } from "ai"
@@ -14,6 +13,8 @@ import { Separator } from "@/components/ui/separator"
 import { Send, Bot, User, Copy, RotateCcw } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { ModelConfig } from "./model-config"
+import { MODEL_ARMOR_TEMPLATES, type ModelArmorTemplate } from "@/lib/model-armor-templates"
+import { copyToClipboard } from "@/lib/utils" // Import copyToClipboard function
 
 const PROMPT_INJECTION_TEMPLATES = [
   {
@@ -65,6 +66,7 @@ export function ChatInterface() {
   const [selectedModel, setSelectedModel] = useState("gpt-4")
   const [selectedGuardrail, setSelectedGuardrail] = useState("azure-content-safety")
   const [inputValue, setInputValue] = useState("")
+  const [templateType, setTemplateType] = useState<"general" | "model-armor">("general")
 
   const { messages, sendMessage, status } = useChat({
     transport: new DefaultChatTransport({
@@ -84,12 +86,12 @@ export function ChatInterface() {
     }
   }
 
-  const handleTemplateSelect = (template: (typeof PROMPT_INJECTION_TEMPLATES)[0]) => {
+  const handleTemplateSelect = (template: (typeof PROMPT_INJECTION_TEMPLATES)[0] | ModelArmorTemplate) => {
     setInputValue(template.prompt)
   }
 
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text)
+  const getCurrentTemplates = () => {
+    return templateType === "model-armor" ? MODEL_ARMOR_TEMPLATES : PROMPT_INJECTION_TEMPLATES
   }
 
   return (
@@ -106,13 +108,31 @@ export function ChatInterface() {
         <Card className="border-slate-700 bg-slate-800/50">
           <CardHeader>
             <CardTitle className="text-slate-200">Injection Templates</CardTitle>
+            <div className="flex gap-2 mt-2">
+              <Button
+                variant={templateType === "general" ? "default" : "outline"}
+                size="sm"
+                onClick={() => setTemplateType("general")}
+                className="text-xs"
+              >
+                General
+              </Button>
+              <Button
+                variant={templateType === "model-armor" ? "default" : "outline"}
+                size="sm"
+                onClick={() => setTemplateType("model-armor")}
+                className="text-xs"
+              >
+                Model Armor
+              </Button>
+            </div>
           </CardHeader>
           <CardContent>
             <ScrollArea className="h-64">
               <div className="space-y-2">
-                {PROMPT_INJECTION_TEMPLATES.map((template, index) => (
+                {getCurrentTemplates().map((template, index) => (
                   <div
-                    key={index}
+                    key={templateType === "model-armor" ? (template as ModelArmorTemplate).id : index}
                     className="p-3 border border-slate-600 rounded-lg hover:bg-slate-700/50 cursor-pointer transition-colors"
                     onClick={() => handleTemplateSelect(template)}
                   >
@@ -137,6 +157,22 @@ export function ChatInterface() {
                         {template.severity}
                       </Badge>
                     </div>
+                    {templateType === "model-armor" && (
+                      <div className="mb-2">
+                        <p className="text-xs text-slate-500">{(template as ModelArmorTemplate).description}</p>
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {(template as ModelArmorTemplate).tags.slice(0, 2).map((tag) => (
+                            <Badge
+                              key={tag}
+                              variant="outline"
+                              className="text-xs px-1 py-0 border-slate-600 text-slate-400"
+                            >
+                              {tag}
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                     <p className="text-xs text-slate-400 line-clamp-2">{template.prompt}</p>
                   </div>
                 ))}
