@@ -3,7 +3,7 @@
 import type React from "react"
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
-import { Shield, MessageSquare, BarChart3, Settings, FileText, Menu, X, TestTube } from "lucide-react"
+import { Shield, MessageSquare, BarChart3, Settings, FileText, Menu, X, TestTube, ShoppingCart } from "lucide-react"
 import { cn } from "@/lib/utils"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
@@ -17,6 +17,7 @@ const navigation = [
   { name: "Chat Tester", href: "/chat", icon: MessageSquare },
   { name: "Testing Suite", href: "/testing", icon: TestTube },
   { name: "Results", href: "/results", icon: FileText },
+  { name: "Lazada Auto-Buy", href: "/lazada", icon: ShoppingCart },
   { name: "Settings", href: "/settings", icon: Settings },
 ]
 
