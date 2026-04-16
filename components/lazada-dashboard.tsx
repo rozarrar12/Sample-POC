@@ -269,11 +269,14 @@ export function LazadaDashboard() {
 
         if (buyData.success) {
           const newStatus = item.buyConfig.addToCartOnly ? "added-to-cart" : "purchased"
+          const buyDetail = buyData.orderId && buyData.orderId !== "SUCCESS"
+            ? `${buyData.message} — Order ID: ${buyData.orderId}`
+            : buyData.message
           stockLogs.push(
             makeLog(
               item.buyConfig.addToCartOnly ? "Added to cart" : "Purchase complete",
               "success",
-              buyData.message
+              buyDetail
             )
           )
           patchItem(
@@ -567,15 +570,25 @@ export function LazadaDashboard() {
                             <p className="text-red-400 text-xs mt-1 truncate">{item.lastError}</p>
                           )}
 
-                          {/* Cart link */}
-                          {(item.status === "added-to-cart" || item.status === "purchased") && (
+                          {/* Cart / Orders links */}
+                          {item.status === "added-to-cart" && (
                             <a
                               href={`https://www.${LAZADA_COUNTRIES[item.country].domain}/cart`}
                               target="_blank"
                               rel="noopener noreferrer"
                               className="inline-flex items-center gap-1 text-xs text-teal-400 hover:text-teal-300 mt-1"
                             >
-                              <ExternalLink className="h-3 w-3" /> Open Lazada Cart
+                              <ExternalLink className="h-3 w-3" /> Open Cart to Complete Checkout
+                            </a>
+                          )}
+                          {item.status === "purchased" && (
+                            <a
+                              href={`https://www.${LAZADA_COUNTRIES[item.country].domain}/order/list`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 text-xs text-emerald-400 hover:text-emerald-300 mt-1"
+                            >
+                              <ExternalLink className="h-3 w-3" /> View Order on Lazada
                             </a>
                           )}
 
@@ -847,11 +860,14 @@ export function LazadaDashboard() {
                         />
                         <div>
                           <label htmlFor="cart-only" className="text-sm text-slate-300 cursor-pointer">
-                            Add to cart only (recommended)
+                            Add to cart only
                           </label>
                           <p className="text-xs text-slate-500">
-                            Safer option — adds to cart so you can review before checkout. Uncheck to attempt
-                            immediate purchase (requires saved payment method on Lazada).
+                            Checked — adds to cart so you review and pay manually (safer).
+                            <br />
+                            Unchecked — <span className="text-orange-400 font-medium">immediately purchases</span> using
+                            your Lazada account&apos;s default delivery address and default saved payment method.
+                            Requires a saved address and payment method on your Lazada account.
                           </p>
                         </div>
                       </div>

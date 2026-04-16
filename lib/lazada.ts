@@ -1,4 +1,4 @@
-// Lazada Auto-Buy: types, URL parsing, stock checking, and cart operations
+// Lazada Auto-Buy: types, URL parsing, stock checking, cart and checkout operations
 
 export type LazadaCountry = "ph" | "sg" | "my" | "th" | "id" | "vn"
 
@@ -356,5 +356,286 @@ export async function addToCart(
   return {
     success: false,
     message: String(data?.message ?? data?.error ?? `HTTP ${response.status}: ${response.statusText}`),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Checkout types
+// ---------------------------------------------------------------------------
+
+export interface LazadaAddress {
+  addressId: string
+  name: string
+  phone: string
+  city: string
+  isDefault: boolean
+}
+
+export interface LazadaPaymentMethod {
+  paymentTypeId: string
+  name: string
+  isDefault: boolean
+}
+
+interface CheckoutPageData {
+  csrfToken: string
+  addresses: LazadaAddress[]
+  paymentMethods: LazadaPaymentMethod[]
+}
+
+// ---------------------------------------------------------------------------
+// Checkout page fetcher + parser
+// ---------------------------------------------------------------------------
+
+async function fetchCheckoutPage(
+  country: LazadaCountry,
+  cookies: string
+): Promise<CheckoutPageData> {
+  const { domain } = LAZADA_COUNTRIES[country]
+  const baseUrl = `https://www.${domain}`
+
+  const response = await fetch(`${baseUrl}/checkout/cart`, {
+    headers: {
+      ...BASE_HEADERS,
+      Accept: "text/html,application/xhtml+xml,*/*",
+      Cookie: cookies,
+      Referer: `${baseUrl}/cart`,
+    },
+    redirect: "follow",
+  })
+
+  if (response.status === 401 || response.status === 403) {
+    throw new Error("Authentication failed — please refresh your session cookies.")
+  }
+  if (!response.ok) {
+    throw new Error(`Checkout page returned HTTP ${response.status}`)
+  }
+
+  const html = await response.text()
+  return parseCheckoutPage(html)
+}
+
+function parseCheckoutPage(html: string): CheckoutPageData {
+  // Lazada embeds all checkout state into a window global
+  let data: any = {}
+  const jsonPatterns = [
+    /window\.__INIT_DATA__\s*=\s*({[\s\S]+?})\s*;?\s*<\/script>/,
+    /window\.__INITIAL_STATE__\s*=\s*({[\s\S]+?})\s*;?\s*<\/script>/,
+    /window\.__checkout_data__\s*=\s*({[\s\S]+?})\s*;?\s*<\/script>/,
+    /"checkoutModel"\s*:\s*({[\s\S]+?}),\s*"/,
+  ]
+  for (const pattern of jsonPatterns) {
+    const match = html.match(pattern)
+    if (match) {
+      try { data = JSON.parse(match[1]); break } catch {}
+    }
+  }
+
+  // CSRF token — several possible locations
+  let csrfToken = ""
+  const csrfPatterns = [
+    /<meta[^>]*name="csrf-token"[^>]*content="([^"]+)"/,
+    /"csrfToken"\s*:\s*"([^"]+)"/,
+    /"_token"\s*:\s*"([^"]+)"/,
+    /name="_token"[^>]*value="([^"]+)"/,
+  ]
+  for (const p of csrfPatterns) {
+    const m = html.match(p)
+    if (m) { csrfToken = m[1]; break }
+  }
+
+  // Addresses
+  const addresses: LazadaAddress[] = []
+  const rawAddresses: any[] =
+    data?.addresses ??
+    data?.addressList ??
+    data?.checkout?.addresses ??
+    data?.userAddresses ??
+    []
+  for (const a of rawAddresses) {
+    addresses.push({
+      addressId: String(a.addressId ?? a.id ?? ""),
+      name: String(a.name ?? a.firstName ?? ""),
+      phone: String(a.phone ?? a.mobile ?? ""),
+      city: String(a.city ?? a.cityName ?? ""),
+      isDefault:
+        a.isDefault === true ||
+        a.defaultAddress === "1" ||
+        a.isDefaultAddress === true,
+    })
+  }
+  // Fallback: extract any single addressId from the page
+  if (addresses.length === 0) {
+    const m = html.match(/"addressId"\s*:\s*"?(\d+)"?/)
+    if (m) addresses.push({ addressId: m[1], name: "Default", phone: "", city: "", isDefault: true })
+  }
+
+  // Payment methods
+  const paymentMethods: LazadaPaymentMethod[] = []
+  const rawPayments: any[] =
+    data?.paymentMethods ??
+    data?.paymentList ??
+    data?.checkout?.paymentMethods ??
+    data?.payments ??
+    []
+  for (const p of rawPayments) {
+    paymentMethods.push({
+      paymentTypeId: String(p.paymentTypeId ?? p.id ?? ""),
+      name: String(p.name ?? p.displayName ?? p.paymentName ?? ""),
+      isDefault: p.isDefault === true || p.selected === true,
+    })
+  }
+  // Fallback: extract any single paymentTypeId from the page
+  if (paymentMethods.length === 0) {
+    const m = html.match(/"paymentTypeId"\s*:\s*"?(\d+)"?/)
+    if (m) paymentMethods.push({ paymentTypeId: m[1], name: "Default Payment", isDefault: true })
+  }
+
+  return { csrfToken, addresses, paymentMethods }
+}
+
+// ---------------------------------------------------------------------------
+// Order submission — tries several known Lazada endpoint patterns
+// ---------------------------------------------------------------------------
+
+async function submitOrder(
+  checkoutData: CheckoutPageData,
+  country: LazadaCountry,
+  cookies: string
+): Promise<{ orderId: string; message: string }> {
+  const { domain } = LAZADA_COUNTRIES[country]
+  const baseUrl = `https://www.${domain}`
+
+  if (checkoutData.addresses.length === 0) {
+    throw new Error(
+      "No delivery address found on your Lazada account. Please add one at My Account → Addresses."
+    )
+  }
+  if (checkoutData.paymentMethods.length === 0) {
+    throw new Error(
+      "No payment method found on your Lazada account. Please add one at My Account → Payment."
+    )
+  }
+
+  const address =
+    checkoutData.addresses.find((a) => a.isDefault) ?? checkoutData.addresses[0]
+  const payment =
+    checkoutData.paymentMethods.find((p) => p.isDefault) ?? checkoutData.paymentMethods[0]
+
+  const payload = {
+    shippingAddressId: address.addressId,
+    addressId: address.addressId,
+    paymentTypeId: payment.paymentTypeId,
+    paymentMethodId: payment.paymentTypeId,
+  }
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "User-Agent": BROWSER_UA,
+    Accept: "application/json, text/plain, */*",
+    Cookie: cookies,
+    Referer: `${baseUrl}/checkout/cart`,
+    Origin: baseUrl,
+    "x-requested-with": "XMLHttpRequest",
+  }
+  if (checkoutData.csrfToken) {
+    headers["X-CSRF-Token"] = checkoutData.csrfToken
+  }
+
+  // Lazada has used different endpoint paths across markets and versions
+  const endpoints = [
+    "/checkout/order/create",
+    "/buy/checkout/placeOrder",
+    "/buy/order/create",
+    "/api/checkout/submit",
+  ]
+
+  let lastError = "Unknown error"
+  for (const endpoint of endpoints) {
+    try {
+      const res = await fetch(`${baseUrl}${endpoint}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(payload),
+      })
+
+      if (res.status === 401 || res.status === 403) {
+        throw new Error("Authentication failed — please refresh your session cookies.")
+      }
+
+      let resData: any = {}
+      try { resData = await res.json() } catch {}
+
+      const orderId =
+        resData?.orderId ??
+        resData?.result?.orderId ??
+        resData?.data?.orderId ??
+        resData?.order?.orderId
+
+      if (orderId) {
+        return { orderId: String(orderId), message: `Order #${orderId} placed successfully` }
+      }
+      if (resData?.success === true || resData?.code === "0") {
+        return { orderId: "SUCCESS", message: "Order placed successfully" }
+      }
+
+      // 404 / 405 means this endpoint doesn't exist — try next
+      if (res.status === 404 || res.status === 405) {
+        lastError = `Endpoint ${endpoint} not found`
+        continue
+      }
+
+      lastError = String(resData?.message ?? resData?.error ?? `HTTP ${res.status}`)
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("Authentication")) throw err
+      lastError = err instanceof Error ? err.message : "Request failed"
+    }
+  }
+
+  throw new Error(`Could not place order: ${lastError}`)
+}
+
+// ---------------------------------------------------------------------------
+// buyNow — full checkout flow: add to cart → get checkout → place order
+// ---------------------------------------------------------------------------
+
+export async function buyNow(
+  itemId: string,
+  skuId: string,
+  quantity: number,
+  country: LazadaCountry,
+  cookies: string
+): Promise<{ success: boolean; message: string; orderId?: string; cartUrl?: string }> {
+  const { domain } = LAZADA_COUNTRIES[country]
+  const cartUrl = `https://www.${domain}/cart`
+
+  // Step 1: Add to cart
+  const cartResult = await addToCart(itemId, skuId, quantity, country, cookies)
+  if (!cartResult.success) {
+    return { success: false, message: `Add to cart failed: ${cartResult.message}`, cartUrl }
+  }
+
+  // Step 2: Fetch checkout page (addresses + payment methods + CSRF token)
+  let checkoutData: CheckoutPageData
+  try {
+    checkoutData = await fetchCheckoutPage(country, cookies)
+  } catch (err) {
+    return {
+      success: false,
+      message: err instanceof Error ? err.message : "Failed to load checkout page",
+      cartUrl,
+    }
+  }
+
+  // Step 3: Place the order using default address and payment
+  try {
+    const order = await submitOrder(checkoutData, country, cookies)
+    return { success: true, message: order.message, orderId: order.orderId }
+  } catch (err) {
+    return {
+      success: false,
+      message: err instanceof Error ? err.message : "Order submission failed",
+      cartUrl,
+    }
   }
 }
